@@ -2,6 +2,7 @@ from torch.optim import Adam
 from random import randint, choice
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset
+from collections import namedtuple
 from pyglet.window import key
 from app import *
 
@@ -13,51 +14,35 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
-class Network(nn.Module):
-	def __init__(self, i_, o_, h_):
-		super(Network, self).__init__()
-		
-		# parameters
-		self.inputSize = i_
-		self.outputSize = h_
-		self.hiddenSize = o_
+Transition = namedtuple('Transition',
+							'state', 'action', 'next_state', 'reward')
 
-		# weights
-		self.W1 = torch.randn(self.inputSize, self.hiddenSize)
-		self.W2 = torch.randn(self.hiddenSize, self.outputSize)
+class DQNAgent:
+	def __init__(self, epsilon = 1):
+		self.epsilon = epsilon
 
-	def forward(self, X):
-		self.z = torch.matmul(X, self.W1)
-		self.z2 = self.sigmoid(self.z)
-		self.z3 = torch.matmul(self.z2, self.W2)
-		o = self.sigmoid(self.z3)
-		return o
+	def get_state(self, game):
+		s = 1
+		if game.snake.direction == (0, 1):
+			s *= 1
+		elif game.snake.direction == (0, -1):
+			s *= 2
+		elif game.snake.direction == (1, 0):
+			s *= 3
+		else:
+			s *= 4
 
-	def sigmoid(self, s):
-		return 1 / (1 + torch.exp(-s))
+		if game.food.position[0] > game.snake.parts[-1][0]:
+			s *= 2
+		if game.food.position[1] > game.snake.parts[-1][1]:
+			s *= 2
 
-	def sigmoidPrime(self, s):
-		return s * (1 - s)
+		if game.snake.parts[-1][0] == 0 or game.snake.parts[-1][0] == game.tilew - 1:
+			s *= 2
+		if game.snake.parts[-1][1] == 0 or game.snake.parts[-1][1] == game.tileh - 1:
+			s *= 2
 
-	def backward(self, X, y, o):
-		self.o_error = y - o
-		self.o_delta = self.o_error * self.sigmoidPrime(o)
-		self.z2_error = torch.matmul(self.o_delta, torch.t(self.W2))
-		self.z2_delta = self.z2_error * self.sigmoidPrime(self.z2)
-		self.W1 += torch.matmul(torch.t(X), self.z2_delta)
-		self.W2 += torch.matmul(torch.t(self.z2), self.o_delta)
-
-	def train(self, X, y):
-		o = self.forward(X)
-		self.backward(X, y, o)
-
-	def saveWeights(self):
-		torch.save(self, "NN")
-
-	def predict(self):
-		print ("Predicted data based on trained weights: ")
-		print ("Input (scaled): \n" + str(xPredicted))
-		print ("Output: \n" + str(self.forward(xPredicted)))
+		return s
 
 class Snake:
 	def __init__(self, tilew, tileh):
@@ -65,6 +50,7 @@ class Snake:
 		self.tileh = tileh
 		self.parts = []
 		self.reset()
+		self.direction = choice([(0,1),(0,-1),(1,0),(-1,0)])
 
 	def __getitem__(self, key):
 		return self.parts[key]
@@ -77,17 +63,41 @@ class Snake:
 		inity = randint(self.tileh // 4, 3 * self.tilew // 4)
 		direction = choice([(0,1),(0,-1),(1,0),(-1,0)])
 		f = lambda x, y : (x[0] + y[0], x[1] + y[1])
+		self.direction = choice([(0,1),(0,-1),(1,0),(-1,0)])
 		self.parts = [(initx, inity), \
 						f((initx, inity),direction), \
 						f(f((initx, inity),direction), direction)]
 
-	def update(self, new_x, new_y):
-		
-		self.parts.append((new_x, new_y))
+	def move(self):
+		self.parts.append((self[-1][0] + self.direction[0], \
+							self[-1][1] + self.direction[1]))
 		del self.parts[0]
+		if (self.parts[-1][0] < 0 or self.parts[-1][0] >= self.tilew or \
+				self.parts[-1][1] < 0 or self.parts[-1][1] >= self.tileh):
+			self.reset()
 
-class App(pyglet.window.Window):
-	def __init__(self, tile, apple, death = "data/death.jpeg", width = 510, height = 510, offset = 5, tilesize = 10):
+	def turn(self, new_dir):
+		if (new_dir[0] * self.direction[0] < 0 or \
+			new_dir[1] * self.direction[1] < 0):
+			self.reset()
+		self.direction = new_dir
+
+	def grow(self, food):
+		self.parts.append(food.position)
+
+class Food:
+	def __init__(self, tilew, tileh):
+		self.tilew = tilew
+		self.tileh = tileh
+		self.reset()
+
+	def reset(self):
+		self.position = (randint(0, self.tilew - 1), \
+						randint(0, self.tileh - 1))
+		return self.position
+
+class Game(pyglet.window.Window):
+	def __init__(self, tile, apple, width = 510, height = 510, offset = 5, tilesize = 10):
 		super().__init__(width, height)
 
 		self.width = width
@@ -98,11 +108,7 @@ class App(pyglet.window.Window):
 		self.tileh = (self.height - self.offset * 2) // self.tilesize
 
 		self.snake = Snake(self.tilew, self.tileh)
-		self.food = (randint(0, self.tilew - 1), \
-					randint(0, self.tileh - 1))
-
-		# self.tensor = torch.zeros([self.tilew, self.tileh], dtype = torch.int32)
-		self.nn = Network(3, 10, 1)
+		self.food = Food(self.tilew, self.tileh)
 
 		self.tile = pyglet.resource.image(tile)
 		self.tile.width = self.tilesize - 2
@@ -112,40 +118,23 @@ class App(pyglet.window.Window):
 		self.apple.width = self.tilesize - 2
 		self.apple.height = self.tilesize - 2
 
-		self.death = pyglet.resource.image(death)
-		self.death.width = self.width
-		self.death.height = self.height
-
-		self.keys = {"UP" : 0, "DOWN" : 0, "LEFT" : 0, "RIGHT" : 0}
-
 		pyglet.gl.glClearColor(0.1, 0.1, 0.1, 1)
 		pyglet.gl.glEnable(pyglet.gl.GL_BLEND)
 		pyglet.gl.glBlendFunc(pyglet.gl.GL_SRC_ALPHA, pyglet.gl.GL_ONE_MINUS_SRC_ALPHA)
-		pyglet.clock.schedule_interval(self.update, 1 / 20)
-
+		pyglet.clock.schedule_interval(self.update, 1 / 15)
 
 	def on_key_press(self, symbol, modifiers):
 		if symbol == key.ESCAPE:
 			exit()
 		if symbol == key.UP:
-			self.keys["UP"] = 1
+			self.snake.turn((0, 1))
 		if symbol == key.DOWN:
-			self.keys["DOWN"] = 1
+			self.snake.turn((0, -1))
 		if symbol == key.LEFT:
-			self.keys["LEFT"] = 1
+			self.snake.turn((-1, 0))
 		if symbol == key.RIGHT:
-			self.keys["RIGHT"] = 1
-
-	def on_key_release(self, symbol, modifiers):
-		if symbol == key.UP:
-			self.keys["UP"] = 0
-		if symbol == key.DOWN:
-			self.keys["DOWN"] = 0
-		if symbol == key.LEFT:
-			self.keys["LEFT"] = 0
-		if symbol == key.RIGHT:
-			self.keys["RIGHT"] = 0
-
+			self.snake.turn((1, 0))
+ 
 	def on_draw(self):
 		self.clear()
 		self.draw()
@@ -176,35 +165,15 @@ class App(pyglet.window.Window):
 							self.offset + part[1] * self.tilesize + 1)
 
 		#drawing food
-		self.apple.blit(self.offset + self.food[0] * self.tilesize + 1, \
-						self.offset + self.food[1] * self.tilesize + 1)
+		self.apple.blit(self.offset + self.food.position[0] * self.tilesize + 1, \
+						self.offset + self.food.position[1] * self.tilesize + 1)
 
 	def update(self, dt):
 		### Here, AI will have to choose which direction to go,
 		### via changing the keys dictionary.
-		# Shitty....
-		res = float(self.nn(torch.tensor((self.snake.parts[-1][0], self.snake.parts[-1][1], self.snake.parts[-2][0]), dtype=torch.float))[0])
-		if (res <= 0.25):
-			self.keys = {"UP" : 1, "DOWN" : 0, "LEFT" : 0, "RIGHT" : 0}
-		elif (res <= 0.5):
-			self.keys = {"UP" : 0, "DOWN" : 1, "LEFT" : 0, "RIGHT" : 0}
-		elif (res <= 0.75):
-			self.keys = {"UP" : 0, "DOWN" : 0, "LEFT" : 1, "RIGHT" : 0}
-		elif (res <= 1):
-			self.keys = {"UP" : 0, "DOWN" : 0, "LEFT" : 0, "RIGHT" : 1}
 
-		if (any(self.keys.values())):
-			new_x = self.snake[-1][0] + self.keys["RIGHT"] - self.keys["LEFT"]
-			new_y = self.snake[-1][1] + self.keys["UP"] - self.keys["DOWN"]
-			if (new_x < 0 or new_x >= self.tilew or \
-				new_y < 0 or new_y >= self.tileh or \
-				(new_x, new_y) in self.snake.parts):
-				self.death.blit(0,0)
-				self.snake.reset()
-			else:
-				self.snake.update(new_x, new_y)
-		if (self.snake.parts[-1] == self.food):
-			self.snake.parts.append(self.food)
-
-			self.food = (randint(0, self.tilew - 1), \
-						randint(0, self.tileh - 1))
+		self.snake.move()
+		if (self.snake.parts[-1] == self.food.position):
+			self.snake.grow(self.food)
+			self.food.reset()
+		
