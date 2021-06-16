@@ -3,6 +3,7 @@ from random import randint, choice
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset
 from pyglet.window import key
+from math import sqrt
 
 import pandas as pd
 import collections
@@ -18,7 +19,7 @@ import torch.nn.functional as F
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class DQNAgent(nn.Module):
-	def __init__(self):
+	def __init__(self, inp = 10, outp = 3, l1 = 64, l2 = 64, l3 = 64):
 		super().__init__()
 		self.reward = 0
 		self.gamma = 0.9
@@ -29,23 +30,25 @@ class DQNAgent(nn.Module):
 		self.epsilon = 0.01
 		self.actual = []
 
-		self.first_layer = 30
-		self.second_layer = 120
-		self.third_layer = 4
-		self.memory = collections.deque(maxlen = 100)
+		self.inp = inp
+		self.first_layer = l1
+		self.second_layer = l2
+		self.third_layer = l3
+		self.outp = outp
+		self.memory = collections.deque(maxlen = 100_000)
 		self.weights = None
 		self.load_weights = None
 		self.optimizer = None
 		self.network()
 
 	def network(self):
-		self.f1 = nn.Linear(8, self.first_layer)
+		self.f1 = nn.Linear(self.inp, self.first_layer)
 		self.f2 = nn.Linear(self.first_layer, self.second_layer)
 		self.f3 = nn.Linear(self.second_layer, self.third_layer)
-		self.f4 = nn.Linear(self.third_layer, 4)
+		self.f4 = nn.Linear(self.third_layer, self.outp)
 
-	def forward(self, X):
-		x = F.relu(self.f1(X))
+	def forward(self, x):
+		x = F.relu(self.f1(x))
 		x = F.relu(self.f2(x))
 		x = F.relu(self.f3(x))
 		x = F.softmax(self.f4(x), dim = -1)
@@ -53,8 +56,10 @@ class DQNAgent(nn.Module):
 
 	def get_state(self, game):
 		s = [
-			game.snake.direction[0],
-			game.snake.direction[1],
+			int(game.snake.direction == (0, 1)),
+			int(game.snake.direction == (0, -1)),
+			int(game.snake.direction == (1, 0)),
+			int(game.snake.direction == (-1, 0)),
 			int(game.snake.parts[-1][1] < game.food.position[1]),
 			int(game.snake.parts[-1][1] > game.food.position[1]),
 			int(game.snake.parts[-1][0] < game.food.position[0]),
@@ -65,18 +70,21 @@ class DQNAgent(nn.Module):
 
 		return np.asarray(s)
 
-	def set_reward(self, crash, fed):
-		self.reward = 0
+	def set_reward(self, crash, fed, steps, apples):
 		if crash:
 			self.reward = -10
+		if crash and steps < 15:
+			self.reward = -500
 		if fed:
-			self.reward = 10
+			self.reward = sqrt(apples) * 3.5
+		if not fed and not crash:
+			self.reward = -1
 		return self.reward
 
 	def remember(self, state, action, next_state, reward, done):
 		self.memory.append((state, action, reward, next_state, done))
 
-	def replay_memory(self, memory, batch_size):
+	def replay_new(self, memory, batch_size):
 		if (len(memory) > batch_size):
 			minibatch = random.sample(memory, batch_size)
 		else:
@@ -91,10 +99,10 @@ class DQNAgent(nn.Module):
 				target = reward + self.gamma * torch.max(self.forward(next_state_tensor)[0])
 			output = self.forward(state_tensor)
 			target_f = output.clone()
-			target_f[0][np.argmax(action)] = targett
+			target_f[0][np.argmax(action)] = target
 			target_f.detach()
 			self.optimizer.zero_grad()
-			loss = F.MSELoss(output, target_f)
+			loss = F.mse_loss(output, target_f)
 			loss.backward()
 			self.optimizer.step()
 
@@ -102,8 +110,8 @@ class DQNAgent(nn.Module):
 		self.train()
 		torch.set_grad_enabled(True)
 		target = reward
-		next_state_tensor = torch.tensor(next_state.reshape((1, 8)), dtype=torch.float32).to(DEVICE)
-		state_tensor = torch.tensor(state.reshape((1, 8)), dtype=torch.float32, requires_grad=True).to(DEVICE)
+		next_state_tensor = torch.tensor(next_state.reshape((1, self.inp)), dtype=torch.float32).to(DEVICE)
+		state_tensor = torch.tensor(state.reshape((1, self.inp)), dtype=torch.float32, requires_grad=True).to(DEVICE)
 		if not done:
 			target = reward + self.gamma * torch.max(self.forward(next_state_tensor[0]))
 		output = self.forward(state_tensor)
@@ -114,3 +122,4 @@ class DQNAgent(nn.Module):
 		loss = F.mse_loss(output, target_f)
 		loss.backward()
 		self.optimizer.step()
+		return loss

@@ -1,6 +1,8 @@
 from random import randint, choice
 from DQN import *
 
+import matplotlib.pyplot as plt
+
 class Snake:
 	def __init__(self, tilew, tileh):
 		self.tilew = tilew
@@ -8,6 +10,7 @@ class Snake:
 		self.parts = []
 		self.reset()
 		self.direction = choice([(0,1),(0,-1),(1,0),(-1,0)])
+		self.apples_eaten = 0
 
 	def __getitem__(self, key):
 		return self.parts[key]
@@ -29,10 +32,6 @@ class Snake:
 		self.parts.append((self[-1][0] + self.direction[0], \
 							self[-1][1] + self.direction[1]))
 		del self.parts[0]
-		if (self.parts[-1][0] < 0 or self.parts[-1][0] >= self.tilew or \
-				self.parts[-1][1] < 0 or self.parts[-1][1] >= self.tileh):
-			return True
-		return False
 
 	def turn(self, new_dir):
 		if (new_dir[0] * self.direction[0] < 0 or \
@@ -55,7 +54,7 @@ class Food:
 		return self.position
 
 class Game():
-	def __init__(self, width = 510, height = 510, offset = 5, tilesize = 10):
+	def __init__(self, width = 410, height = 410, offset = 5, tilesize = 20):
 		self.score = 0
 		self.games_counter = 0
 		self.crash = False
@@ -72,74 +71,133 @@ class Game():
 
 		self.agent = DQNAgent()
 		self.agent = self.agent.to(DEVICE)
-		self.agent.optimizer = optim.Adam(self.agent.parameters(), weight_decay = 0, lr = 0.0005)
-		self.counter_games = 0
+		self.agent.optimizer = optim.Adam(self.agent.parameters(), weight_decay = 0, lr = 0.1)
 		self.score_plot = []
 		self.counter_plot = []
-		self.record = 0
 		self.total_score = 0
 
 		self.snake = Snake(self.tilew, self.tileh)
 		self.food = Food(self.tilew, self.tileh)
 
-	def do_move(self, symbol):
-		if symbol == 'U':
-			self.snake.turn((0, 1))
-		if symbol == 'D':
-			self.snake.turn((0, -1))
-		if symbol == 'L':
-			self.snake.turn((-1, 0))
-		if symbol == 'R':
-			self.snake.turn((1, 0))
- 
 	def update(self):
 		
-		# print(self.steps, self.score)
-
 		# MOVE HAPPENS HERE
-		self.fed = False
-		self.crash = self.snake.move()
-		if (self.snake.parts[-1] == self.food.position):
-			self.fed = True
-			self.food.reset()
-			self.score += 10
+		self.check_on_crash()
+		self.check_on_fed()
+		if self.crash:
+			self.snake.reset()
+			self.snake.apples_eaten = 0
+			self.steps = 0
+			self.crash = False
+		if (self.fed):
+			self.score += 1
+			self.snake.apples_eaten += 1
 			self.snake.grow(self.food)
+			self.food.reset()
 		# MOVE ENDS HERE
 
 		self.steps += 1
-		
-	def run(self):
+
+	def check_on_crash(self):
+		if (self.snake[-1][0] < 0 or self.snake[-1][0] >= self.tilew or \
+				self.snake[-1][1] < 0 or self.snake[-1][1] >= self.tileh):
+			self.crash = True
+		else:
+			self.crash = False
+
+	def check_on_fed(self):
+		if self.snake[-1] == self.food.position:
+			self.fed = True
+		else:
+			self.fed = False
+
+	def do_move(self, action):
+		if action == 0:
+			self.snake.turn((-self.snake.direction[1], self.snake.direction[0]))
+		if action == 1:
+			pass
+		if action == 2:
+			self.snake.turn((self.snake.direction[1], -self.snake.direction[0]))
+		self.snake.move()
+
+	def initialize_game(self, batch_size):
+		state_init1 = self.agent.get_state(self)
+		action = np.array([1, 0, 0, 0])
+		self.do_move(np.argmax(action))
+		state_init2 = self.agent.get_state(self)
+		reward1 = self.agent.set_reward(self.crash, self.fed, self.steps, self.snake.apples_eaten)
+		self.agent.remember(state_init1, action, reward1, state_init2, self.crash)
+		self.agent.replay_new(self.agent.memory, batch_size)
+	
+	def choose_action(self):
+		state_old = self.agent.get_state(self)
+		if random.uniform(0,1) < self.agent.epsilon:
+			final_move = np.eye(self.agent.outp)[randint(0,self.agent.outp - 1)]
+		else:
+			with torch.no_grad():
+				state_old_tensor = torch.tensor(state_old.reshape((1, self.agent.inp)), dtype=torch.float32).to(DEVICE)
+				prediction = self.agent(state_old_tensor)
+				final_move = np.eye(self.agent.outp)[np.argmax(prediction.detach().cpu().numpy()[0])]
+		action = np.argmax(final_move)
+		return action
+
+	def step(self, train = True):
+		if not train:
+			self.epsilon = 0.01
+
+		state_old = self.agent.get_state(self)
+		if random.uniform(0,1) < self.agent.epsilon:
+			final_move = np.eye(self.agent.outp)[randint(0,self.agent.outp - 1)]
+		else:
+			with torch.no_grad():
+				state_old_tensor = torch.tensor(state_old.reshape((1, self.agent.inp)), dtype=torch.float32).to(DEVICE)
+				prediction = self.agent(state_old_tensor)
+				final_move = np.eye(self.agent.outp)[np.argmax(prediction.detach().cpu().numpy()[0])]
+		action = np.argmax(final_move)
+		self.do_move(action)
+
+		self.check_on_crash()
+		self.check_on_fed()
+		if self.fed:
+			self.snake.grow(self.food)
+			self.food.reset()
+			self.score += 1
+			self.steps = 0
+
+		state_new = self.agent.get_state(self)
+		reward = self.agent.set_reward(self.crash, self.fed, self.steps, self.snake.apples_eaten)
+		if train:
+			self.agent.train_short_memory(state_old, final_move, reward, state_new, self.crash)
+			self.agent.remember(state_old, final_move, reward, state_new, self.crash)
+
+	def run_train(self):
 		print("Let the game begin!")
 		while self.games_counter <= 100:
+			# reset environment
 			self.steps = 0
 			self.score = 0
 			self.crash = False
 			self.snake.reset()
+			self.food.reset()
+
+			# update epsilon
+			self.agent.epsilon = 1 - self.games_counter * 1/110
+			
+			# game loop
+			self.agent.replay_new(self.agent.memory, 1000)
 			while not self.crash and self.steps < 100:
-				self.agent.epsilon = 1 - self.games_counter * 0.0005
-
-				state_old = self.agent.get_state(self)
-				if random.uniform(0,1) < self.agent.epsilon:
-					final_move = np.eye(4)[randint(0,3)]
-				else:
-					with torch.no_grad():
-						state_old_tensor = torch.tensor(state_old.reshape((1, 8)), dtype=torch.float32).to(DEVICE)
-						prediction = self.agent(state_old_tensor)
-						final_move = np.eye(4)[np.argmax(prediction.detach().cpu().numpy()[0])]
-
-				self.update()
-				if self.fed:
-					self.score += 10
-
-				state_new = self.agent.get_state(self)
-				reward = self.agent.set_reward(self.crash, self.fed)
-
-				if reward > 0:
-					self.steps = 0
-
-				self.agent.train_short_memory(state_old, final_move, reward, state_new, self.crash)
-				self.agent.remember(state_old, final_move, reward, state_new, self.crash)
+				self.step()
+			
+			self.total_score += self.score
+			self.counter_plot.append(self.games_counter)
+			self.score_plot.append(self.score)
 			self.games_counter += 1
 			if self.score > self.record:
 				self.record = self.score
+			if self.games_counter % 1 == 0:
+				print(self.games_counter, "episode, score: ", self.score)
+	
+		torch.save(self.agent.state_dict(), "./snake_ai")
+		plt.scatter(self.counter_plot, self.score_plot)
+		plt.show()
 		print("The game ended with record of", self.record)
