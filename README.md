@@ -1,5 +1,5 @@
 # snake_ai
 
-* Experimental RL project
+Experimental RL project
 
-learning Snake to play itself, via Deep Q-Network
+Learning Snake to play itself, via Deep Q-Network
