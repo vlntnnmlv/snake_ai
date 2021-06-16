@@ -42,15 +42,16 @@ class DQNAgent(nn.Module):
 		self.network()
 
 	def network(self):
-		self.f1 = nn.Linear(self.inp, self.first_layer)
-		self.f2 = nn.Linear(self.first_layer, self.second_layer)
-		self.f3 = nn.Linear(self.second_layer, self.third_layer)
-		self.f4 = nn.Linear(self.third_layer, self.outp)
+		self.f1 = nn.Linear(self.inp, 256)
+		# self.f2 = nn.Linear(self.first_layer, self.second_layer)
+		# self.f3 = nn.Linear(self.second_layer, self.third_layer)
+		# self.f2 = nn.Linear(self.first_layer, self.third_layer)
+		self.f4 = nn.Linear(256, self.outp)
 
 	def forward(self, x):
 		x = F.relu(self.f1(x))
-		x = F.relu(self.f2(x))
-		x = F.relu(self.f3(x))
+		# x = F.relu(self.f2(x))
+		# x = F.relu(self.f3(x))
 		x = F.softmax(self.f4(x), dim = -1)
 		return x
 
@@ -74,14 +75,14 @@ class DQNAgent(nn.Module):
 		if crash:
 			self.reward = -10
 		if crash and steps < 15:
-			self.reward = -500
+			self.reward = -50
 		if fed:
 			self.reward = sqrt(apples) * 3.5
 		if not fed and not crash:
-			self.reward = -1
+			self.reward = -0.5
 		return self.reward
 
-	def remember(self, state, action, next_state, reward, done):
+	def remember(self, state, action, reward, next_state, done):
 		self.memory.append((state, action, reward, next_state, done))
 
 	def replay_new(self, memory, batch_size):
@@ -89,14 +90,14 @@ class DQNAgent(nn.Module):
 			minibatch = random.sample(memory, batch_size)
 		else:
 			minibatch = memory
-		for state, action, next_state, reward, done in minibatch:
+		for state, action, reward, next_state, done in minibatch:
 			self.train()
 			torch.set_grad_enabled(True)
 			target = reward
 			next_state_tensor = torch.tensor(np.expand_dims(next_state, 0), dtype = torch.float32).to(DEVICE)
 			state_tensor = torch.tensor(np.expand_dims(state, 0), dtype = torch.float32, requires_grad = True).to(DEVICE)
 			if not done:
-				target = reward + self.gamma * torch.max(self.forward(next_state_tensor)[0])
+				target = reward + self.gamma * torch.max(self.forward(next_state_tensor[0]))
 			output = self.forward(state_tensor)
 			target_f = output.clone()
 			target_f[0][np.argmax(action)] = target

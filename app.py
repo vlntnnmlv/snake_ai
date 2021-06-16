@@ -74,5 +74,5 @@ class App(pyglet.window.Window):
 						self.game.offset + self.game.food.position[1] * self.game.tilesize + 1)
 
 	def update(self, dt):
-		self.game.do_move(randint(0,2))
+		self.game.do_move(self.game.choose_action())
 		self.game.update()

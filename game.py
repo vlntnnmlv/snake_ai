@@ -71,7 +71,7 @@ class Game():
 
 		self.agent = DQNAgent()
 		self.agent = self.agent.to(DEVICE)
-		self.agent.optimizer = optim.Adam(self.agent.parameters(), weight_decay = 0, lr = 0.1)
+		self.agent.optimizer = optim.Adam(self.agent.parameters(), weight_decay = 0, lr = 0.001)
 		self.score_plot = []
 		self.counter_plot = []
 		self.total_score = 0
